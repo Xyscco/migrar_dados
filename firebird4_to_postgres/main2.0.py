@@ -70,7 +70,7 @@ def process_and_insert_data(rows, insert_sql, pg_cursor):
 # Conectar ao banco de dados Firebird
 fb_conn = fdb.connect(
     host='localhost', port=3051, 
-    database='D:\\Syncode\\projetos-Python\\migrar-dados\\firebird4_to_postgres\\bancos\CADASTRO.FDB',
+    database="/firebird/data/CADASTRO.FDB",
     user='SYSDBA', 
     password='masterkey',
     charset='WIN1252' # Adicionado para suportar caracteres especiais
