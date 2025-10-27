@@ -313,18 +313,8 @@ def parse_database_url(database_url):
     else:
         raise ValueError("URL do banco de dados inválida")
 
-def create_database_backup(database_url, backup_directory='./backups', backup_format='custom'):
-    """
-    Cria backup do banco de dados PostgreSQL usando pg_dump
-    
-    Args:
-        database_url: URL de conexão do banco
-        backup_directory: Diretório onde salvar o backup
-        backup_format: Formato do backup ('custom', 'plain', 'directory', 'tar')
-    
-    Returns:
-        str: Caminho do arquivo de backup criado
-    """
+def create_sql_backup(database_url, backup_directory='./backups'):
+
     try:
         # Cria diretório de backup se não existir
         os.makedirs(backup_directory, exist_ok=True)
@@ -335,50 +325,31 @@ def create_database_backup(database_url, backup_directory='./backups', backup_fo
         # Gera nome do arquivo de backup com timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         database_name = db_info['database']
-        
-        # Define extensão baseada no formato
-        extensions = {
-            'custom': '.backup',
-            'plain': '.sql',
-            'directory': '',  # Será um diretório
-            'tar': '.tar'
-        }
-        
-        if backup_format == 'directory':
-            backup_filename = f"{database_name}_backup_{timestamp}"
-        else:
-            backup_filename = f"{database_name}_backup_{timestamp}{extensions[backup_format]}"
-        
+        backup_filename = f"{database_name}_backup_{timestamp}.sql"
         backup_path = os.path.join(backup_directory, backup_filename)
         
-        # Monta comando pg_dump
+        # Monta comando pg_dump para formato SQL
         cmd = [
             'pg_dump',
             '-h', db_info['host'],
             '-p', db_info['port'],
             '-U', db_info['user'],
             '-d', db_info['database'],
+            '-f', backup_path,
             '-v',  # Verbose
             '--no-password'  # Usa variável de ambiente para senha
         ]
-        
-        # Adiciona formato específico
-        if backup_format == 'custom':
-            cmd.extend(['-Fc', '-f', backup_path])
-        elif backup_format == 'plain':
-            cmd.extend(['-f', backup_path])
-        elif backup_format == 'directory':
-            cmd.extend(['-Fd', '-f', backup_path])
-        elif backup_format == 'tar':
-            cmd.extend(['-Ft', '-f', backup_path])
         
         # Define variável de ambiente para senha
         env = os.environ.copy()
         env['PGPASSWORD'] = db_info['password']
         
-        print(f"\nIniciando backup do banco de dados '{database_name}'...")
-        print(f"Formato: {backup_format}")
-        print(f"Destino: {backup_path}")
+        print("\n" + "="*60)
+        print("🔄 INICIANDO BACKUP DO BANCO DE DADOS")
+        print("="*60)
+        print(f"📦 Banco: {database_name}")
+        print(f"📄 Formato: SQL (.sql)")
+        print(f"📂 Destino: {backup_path}")
         
         # Executa o comando
         result = subprocess.run(
@@ -390,84 +361,37 @@ def create_database_backup(database_url, backup_directory='./backups', backup_fo
         )
         
         # Verifica se o arquivo foi criado
-        if backup_format == 'directory':
-            if os.path.isdir(backup_path):
-                print(f"✅ Backup criado com sucesso: {backup_path}")
-                return backup_path
+        if os.path.isfile(backup_path):
+            file_size = os.path.getsize(backup_path)
+            file_size_mb = file_size / (1024 * 1024)
+            
+            print("\n" + "="*60)
+            print("✅ BACKUP CRIADO COM SUCESSO")
+            print("="*60)
+            print(f"📁 Arquivo: {backup_path}")
+            print(f"💾 Tamanho: {file_size_mb:.2f} MB")
+            print(f"📍 Localização completa: {os.path.abspath(backup_path)}")
+            
+            print("\n" + "="*60)
+            print("🔧 COMO RESTAURAR ESTE BACKUP")
+            print("="*60)
+            print(f"psql -h localhost -p 5432 -U postgres -d nome_do_banco -f '{backup_path}'")
+            print("="*60)
+            
+            return backup_path
         else:
-            if os.path.isfile(backup_path):
-                file_size = os.path.getsize(backup_path)
-                file_size_mb = file_size / (1024 * 1024)
-                print(f"✅ Backup criado com sucesso: {backup_path}")
-                print(f"📁 Tamanho do arquivo: {file_size_mb:.2f} MB")
-                return backup_path
-        
-        raise Exception("Arquivo de backup não foi encontrado após execução")
+            raise Exception("Arquivo de backup não foi encontrado após execução")
         
     except subprocess.CalledProcessError as e:
-        print(f"❌ Erro ao executar pg_dump:")
+        print("\n" + "="*60)
+        print("❌ ERRO AO EXECUTAR PG_DUMP")
+        print("="*60)
         print(f"Código de saída: {e.returncode}")
-        print(f"Stderr: {e.stderr}")
+        print(f"Erro: {e.stderr}")
         return None
     except Exception as e:
-        print(f"❌ Erro ao criar backup: {e}")
+        print(f"\n❌ Erro ao criar backup: {e}")
         return None
-
-def create_multiple_backups(database_url, backup_directory='./backups'):
-    """
-    Cria múltiplos formatos de backup
-    """
-    print("\n" + "="*60)
-    print("🔄 INICIANDO PROCESSO DE BACKUP")
-    print("="*60)
-    
-    formats = [
-        ('custom', 'Formato customizado (recomendado para restore)'),
-        ('plain', 'SQL puro (legível, mas maior)'),
-    ]
-    
-    successful_backups = []
-    
-    for format_type, description in formats:
-        print(f"\n📦 Criando backup em formato {format_type}...")
-        print(f"ℹ️  {description}")
-        
-        backup_path = create_database_backup(
-            database_url, 
-            backup_directory, 
-            format_type
-        )
-        
-        if backup_path:
-            successful_backups.append((format_type, backup_path))
-    
-    # Resumo dos backups
-    print("\n" + "="*60)
-    print("📋 RESUMO DOS BACKUPS CRIADOS")
-    print("="*60)
-    
-    if successful_backups:
-        for format_type, path in successful_backups:
-            print(f"✅ {format_type.upper()}: {path}")
-        
-        print(f"\n📂 Todos os backups salvos em: {os.path.abspath(backup_directory)}")
-        
-        # Instruções de restore
-        print("\n" + "="*60)
-        print("🔧 INSTRUÇÕES PARA RESTAURAR")
-        print("="*60)
-        
-        for format_type, path in successful_backups:
-            if format_type == 'custom':
-                print(f"\n📌 Para restaurar backup CUSTOM:")
-                print(f"pg_restore -h localhost -p 5432 -U postgres -d nome_do_banco -v '{path}'")
-            elif format_type == 'plain':
-                print(f"\n📌 Para restaurar backup PLAIN:")
-                print(f"psql -h localhost -p 5432 -U postgres -d nome_do_banco -f '{path}'")
-    else:
-        print("❌ Nenhum backup foi criado com sucesso")
-    
-    return successful_backups
 
 # Configurações
 csv_directory = './csv'  # Altere para o diretório dos seus CSVs
@@ -497,7 +421,7 @@ if __name__ == "__main__":
     print(f"\n✅ Migração concluída em {migration_duration:.2f} segundos")
     
     # Criar backups
-    successful_backups = create_multiple_backups(database_url, backup_directory)
+    successful_backups = create_sql_backup(database_url, backup_directory)
     
     end_time = time.time()
     total_time = end_time - start_time
