@@ -9,7 +9,12 @@ from sqlalchemy.sql import insert
 from tqdm import tqdm
 import numpy as np
 
-def csv_to_sqlalchemy_insert(table, df, field_names, batch_size=1000):
+log_file = 'migration_errors.log'
+
+if os.path.exists(log_file):
+    os.remove(log_file)
+
+def csv_to_sqlalchemy_insert(table, df, field_names, batch_size=1):
     """
     Converte DataFrame em inserções SQLAlchemy com processamento em lotes
     """
@@ -40,8 +45,23 @@ def infer_column_type(series, column_name):
     # Remove valores nulos para análise
     non_null_series = series.dropna()
 
-    if column_name == 'barras' or column_name == 'Barras':
-        return String(255) 
+    if 'barras' in column_name.lower() or 'princípio' in column_name.lower():
+        return Text()
+
+    # if column_name == 'barras' or column_name == 'Barras':
+    #     return String(255) 
+
+    # Para strings, determina o tamanho máximo
+    if series.dtype == 'object':
+        max_length = series.astype(str).str.len().max()
+        if pd.isna(max_length):
+            max_length = 255
+        
+        # Se muito longo, usa TEXT
+        if max_length > 8000:
+            return Text()
+        else:
+            return String(min(max_length + 50, 8000))  # Adiciona margem de segurança
     
     if len(non_null_series) == 0:
         return String(255)  # Default para colunas vazias
@@ -77,17 +97,7 @@ def infer_column_type(series, column_name):
             except:
                 continue
     
-    # Para strings, determina o tamanho máximo
-    if series.dtype == 'object':
-        max_length = series.astype(str).str.len().max()
-        if pd.isna(max_length):
-            max_length = 255
-        
-        # Se muito longo, usa TEXT
-        if max_length > 8000:
-            return Text()
-        else:
-            return String(min(max_length + 50, 8000))  # Adiciona margem de segurança
+    
     
     # Default
     return String(255)
@@ -123,7 +133,7 @@ def clean_column_name(column_name):
     
     return name
 
-def csv_to_postgresql_create_sql(csv_file_path, table_name, delimiter=',', encoding='utf-8'):
+def csv_to_postgresql_create_sql(csv_file_path, table_name, delimiter=';', encoding='utf-8'):
     """
     Gera SQL de criação de tabela baseado na estrutura do CSV
     """
@@ -156,8 +166,13 @@ def csv_to_postgresql_create_sql(csv_file_path, table_name, delimiter=',', encod
             column_type = infer_column_type(df_sample[column], column)
             
             # Converte para SQL
-            if isinstance(column_type, String):
-                sql_type = f"VARCHAR({column_type.length})"
+            # Text deve ser testado antes de String, pois Text pode herdar de String
+            if isinstance(column_type, Text):
+                sql_type = "TEXT"
+            elif isinstance(column_type, String):
+                # length pode ser None (ex: Text() herdado de String), usar fallback
+                length = getattr(column_type, 'length', None) or 255
+                sql_type = f"VARCHAR({length})"
             elif isinstance(column_type, Integer):
                 sql_type = "INTEGER"
             elif isinstance(column_type, Float):
@@ -166,8 +181,6 @@ def csv_to_postgresql_create_sql(csv_file_path, table_name, delimiter=',', encod
                 sql_type = "DATE"
             elif isinstance(column_type, Boolean):
                 sql_type = "BOOLEAN"
-            elif isinstance(column_type, Text):
-                sql_type = "TEXT"
             else:
                 sql_type = "VARCHAR(255)"
             
@@ -177,7 +190,9 @@ def csv_to_postgresql_create_sql(csv_file_path, table_name, delimiter=',', encod
         return sql, list(field_names.keys()), column_mapping
         
     except Exception as e:
-        print(f"Erro ao analisar CSV {csv_file_path}: {e}")
+        # print(f"Erro ao analisar CSV {csv_file_path}: {e}")
+        with open(log_file, 'a') as f:
+            f.write(f"{datetime.now()}: {e}\n")
         return None, None, None
 
 def create_tables_from_csvs(csv_directory, database_url, delimiter=',', encoding='utf-8'):
@@ -201,10 +216,10 @@ def create_tables_from_csvs(csv_directory, database_url, delimiter=',', encoding
                 )
                 
                 if create_table_sql:
-                    # Executa o SQL de criação da tabela usando text()
-                    with engine.connect() as connection:
+                    # Executa o SQL de criação da tabela dentro de uma transação
+                    # engine.begin() abre conexão + transaction e commita ao sair do bloco
+                    with engine.begin() as connection:
                         connection.execute(text(create_table_sql))
-                        connection.commit()
                         print(f"Tabela '{table_name}' criada com sucesso.")
                         
                         # Armazena o mapeamento para uso na migração
@@ -216,13 +231,17 @@ def create_tables_from_csvs(csv_directory, database_url, delimiter=',', encoding
                     print(f"Erro ao criar tabela para '{filename}'")
                     
     except SQLAlchemyError as e:
-        print(f"Erro ao executar SQL: {e}")
+        # print(f"Erro ao executar SQL: {e}")
+        with open(log_file, 'a') as f:
+            f.write(f"{datetime.now()}: {e}\n")
     except Exception as e:
-        print(f"Erro geral: {e}")
+        # print(f"Erro geral: {e}")
+        with open(log_file, 'a') as f:
+            f.write(f"{datetime.now()}: {e}\n")
     
     return table_mappings
 
-def migrate_csv_to_postgresql(csv_directory, database_url, table_mappings, delimiter=',', encoding='utf-8'):
+def migrate_csv_to_postgresql(csv_directory, database_url, table_mappings, delimiter=';', encoding='utf-8'):
     """
     Migra dados dos arquivos CSV para PostgreSQL
     """
@@ -242,56 +261,88 @@ def migrate_csv_to_postgresql(csv_directory, database_url, table_mappings, delim
                 print(f"Migrando dados de '{filename}'...")
                 
                 with engine.connect() as connection:
-                    # Define a tabela com base em metadata já existente
-                    table = Table(table_name, metadata, autoload_with=engine)
-                    
-                    # Lê o arquivo CSV
-                    try:
-                        df = pd.read_csv(csv_file_path, delimiter=delimiter, encoding=encoding)
+                    # Abre uma transação que commita automaticamente:
+                    # usa engine.begin() para garantir commit ao finalizar
+                    with engine.begin() as connection_tx:
+                        # Define a tabela com base em metadata já existente
+                        table = Table(table_name, metadata, autoload_with=connection_tx)
                         
-                        # Aplica o mapeamento de colunas
-                        column_mapping = table_mappings[filename]['column_mapping']
-                        field_names = table_mappings[filename]['field_names']
-                        
-                        df = df.rename(columns=column_mapping)
-                        
-                        # Garante que todas as colunas esperadas existam
-                        for field in field_names:
-                            if field not in df.columns:
-                                df[field] = None
-                        
-                        # Remove colunas extras que não estão na tabela
-                        df = df[field_names]
-                        
-                        # Trata valores de data se necessário
-                        for col in df.columns:
-                            if df[col].dtype == 'object':
-                                # Tenta converter strings de data
-                                try:
-                                    df[col] = pd.to_datetime(df[col], errors='ignore', infer_datetime_format=True)
-                                except:
-                                    pass
-                        
-                        # Inserção de registros com barra de progresso
-                        total_rows = len(df)
-                        processed_rows = 0
-                        
-                        with tqdm(total=total_rows, desc=f"Migrando {filename}") as pbar:
-                            for stmt in csv_to_sqlalchemy_insert(table, df, field_names):
-                                result = connection.execute(stmt)
-                                batch_size = result.rowcount
-                                processed_rows += batch_size
-                                pbar.update(batch_size)
+                        # Lê o arquivo CSV
+                        try:
+                            df = pd.read_csv(csv_file_path, delimiter=delimiter, encoding=encoding)
                             
-                            connection.commit()
-                        
-                        print(f"Dados de '{filename}' migrados com sucesso para a tabela '{table_name}' ({total_rows} registros).")
-                        
-                    except Exception as e:
-                        print(f"Erro ao processar CSV '{filename}': {e}")
+                            # Aplica o mapeamento de colunas
+                            column_mapping = table_mappings[filename]['column_mapping']
+                            field_names = table_mappings[filename]['field_names']
+                            
+                            df = df.rename(columns=column_mapping)
+                            
+                            # Garante que todas as colunas esperadas existam
+                            for field in field_names:
+                                if field not in df.columns:
+                                    df[field] = None
+                            
+                            # Remove colunas extras que não estão na tabela
+                            df = df[field_names]
+                            
+                            # Trata valores de data se necessário
+                            for col in df.columns:
+                                if df[col].dtype == 'object':
+                                    # Tenta detectar um formato entre padrões comuns e usar format explícito para evitar warnings
+                                    try:
+                                        sample = df[col].dropna().astype(str).head(100)
+                                        if sample.empty:
+                                            continue
+
+                                        date_patterns = [
+                                            '%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%Y/%m/%d',
+                                            '%d-%m-%Y', '%m-%d-%Y', '%Y%m%d'
+                                        ]
+
+                                        best_fmt = None
+                                        best_count = 0
+                                        for fmt in date_patterns:
+                                            parsed = pd.to_datetime(sample, format=fmt, infer_datetime_format=False)
+                                            count = parsed.notna().sum()
+                                            if count > best_count:
+                                                best_count = count
+                                                best_fmt = fmt
+
+                                        # Se encontramos um formato que parseou a maioria, usar format explícito (sem inferência)
+                                        if best_fmt and best_count >= max(1, int(0.6 * len(sample))):
+                                            df[col] = pd.to_datetime(df[col], format=best_fmt, infer_datetime_format=False)
+                                        else:
+                                            # Sem formato consistente: usar to_datetime sem inferência para evitar o UserWarning
+                                            df[col] = pd.to_datetime(df[col], infer_datetime_format=False)
+                                    except Exception:
+                                        # Se tudo falhar, mantém a coluna original
+                                        pass
+                            
+                            # Inserção de registros com barra de progresso
+                            total_rows = len(df)
+                            processed_rows = 0
+                            
+                            with tqdm(total=total_rows, desc=f"Migrando {filename}") as pbar:
+                                for stmt in csv_to_sqlalchemy_insert(table, df, field_names):
+                                    result = connection_tx.execute(stmt)
+                                    batch_size = result.rowcount if result.rowcount is not None else 0
+                                    processed_rows += batch_size
+                                    pbar.update(batch_size)
+                            
+                            print(f"Dados de '{filename}' migrados com sucesso para a tabela '{table_name}' ({total_rows} registros).")
+                            
+                        except Exception as e:
+                            with open(log_file, 'a') as f:
+                                f.write(f"{datetime.now()}: Erro ao processar CSV '{filename}': {e}\n")
+                            # print(f"Erro ao processar CSV '{filename}': {e}")
                         
     except SQLAlchemyError as e:
-        print(f"Erro ao migrar dados: {e}")
+        # print(f"Erro ao migrar dados: {e}")
+        with open(log_file, 'a') as f:
+            f.write(f"{datetime.now()}: {e}\n")
+    except Exception as e:
+        with open(log_file, 'a') as f:
+            f.write(f"{datetime.now()}: {e}\n")
 
 def parse_database_url(database_url):
     """
@@ -395,7 +446,8 @@ def create_sql_backup(database_url, backup_directory='./backups'):
 
 # Configurações
 csv_directory = './csv'  # Altere para o diretório dos seus CSVs
-database_url = 'postgresql://postgres:syncode123@localhost:5432/digisat'
+database_name = input("Digite o nome do banco de dados PostgreSQL de destino: ")
+database_url = f'postgresql://postgres:syncode123@localhost:5432/{database_name}'
 backup_directory = './backups'  # Diretório para salvar backups
 
 # Configurações opcionais para CSV
@@ -421,7 +473,9 @@ if __name__ == "__main__":
     print(f"\n✅ Migração concluída em {migration_duration:.2f} segundos")
     
     # Criar backups
-    successful_backups = create_sql_backup(database_url, backup_directory)
+    # successful_backups = create_sql_backup(database_url, backup_directory)
+
+    successful_backups = []
     
     end_time = time.time()
     total_time = end_time - start_time
