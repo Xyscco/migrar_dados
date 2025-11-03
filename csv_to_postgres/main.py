@@ -45,8 +45,11 @@ def infer_column_type(series, column_name):
     # Remove valores nulos para análise
     non_null_series = series.dropna()
 
-    if 'barras' in column_name.lower() or 'princípio' in column_name.lower():
-        return Text()
+    # Comentado: sempre que for identificado como string, definir como TEXT
+    # if 'barras' in column_name.lower() or 'princípio' in column_name.lower():
+    #     with open(log_file, 'a') as f:
+    #         f.write(f"{datetime.now()}: Devido ao nome a coluna {column_name} foi definida como TEXT\n")
+    #     return Text()
 
     # if column_name == 'barras' or column_name == 'Barras':
     #     return String(255) 
@@ -96,8 +99,6 @@ def infer_column_type(series, column_name):
                 return Date()
             except:
                 continue
-    
-    
     
     # Default
     return String(255)
@@ -170,9 +171,7 @@ def csv_to_postgresql_create_sql(csv_file_path, table_name, delimiter=';', encod
             if isinstance(column_type, Text):
                 sql_type = "TEXT"
             elif isinstance(column_type, String):
-                # length pode ser None (ex: Text() herdado de String), usar fallback
-                length = getattr(column_type, 'length', None) or 255
-                sql_type = f"VARCHAR({length})"
+                sql_type = f"TEXT"
             elif isinstance(column_type, Integer):
                 sql_type = "INTEGER"
             elif isinstance(column_type, Float):
