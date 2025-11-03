@@ -367,6 +367,16 @@ def parse_database_url(database_url):
 def create_sql_backup(database_url, backup_directory='./backups'):
 
     try:
+        subprocess.run(['pg_dump', '--version'], capture_output=True, text=True, check=True)
+    except FileNotFoundError:
+        print("❌ pg_dump não encontrado. Certifique-se de que o PostgreSQL está instalado e pg_dump está no PATH.")
+        print("Para instalar: sudo apt install postgresql-client")
+        return None
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Erro ao verificar pg_dump: {e.stderr}")
+        return None
+
+    try:
         # Cria diretório de backup se não existir
         os.makedirs(backup_directory, exist_ok=True)
         
@@ -473,7 +483,7 @@ if __name__ == "__main__":
     print(f"\n✅ Migração concluída em {migration_duration:.2f} segundos")
     
     # Criar backups
-    # successful_backups = create_sql_backup(database_url, backup_directory)
+    successful_backups = create_sql_backup(database_url, backup_directory)
 
     successful_backups = []
     
