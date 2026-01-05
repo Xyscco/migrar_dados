@@ -17,7 +17,8 @@ def connect_firebird(host, database, user, password, port = 3051, charset = 'WIN
     try:
         connection = fdb.connect(
             host=host, port=port, database=database,
-            user=user, password=password, charset=charset
+            user=user, password=password, charset=charset,
+            fb_library_name='C:\\Firebird_3_0\\fbclient.dll'
         )
         return connection
     except Exception as e:
@@ -59,7 +60,7 @@ def get_firebird_tables(fb_conn):
                 f.RDB$FIELD_LENGTH
             FROM RDB$RELATION_FIELDS rf
             JOIN RDB$FIELDS f ON rf.RDB$FIELD_SOURCE = f.RDB$FIELD_NAME
-            WHERE rf.RDB$RELATION_NAME = '{table}'
+            WHERE TRIM(rf.RDB$RELATION_NAME) = '{table}'
             ORDER BY rf.RDB$RELATION_NAME, rf.RDB$FIELD_POSITION 
         """)
         fields = [(row[0], row[1], row[2], row[3]) for row in cursor.fetchall()]
@@ -136,7 +137,15 @@ def migrate_data(fb_conn, pg_conn, table_structures):
     pg_cursor = pg_conn.cursor()
     
     for table, fields in tqdm(table_structures.items(), desc="Migrando tabelas"):
-        fb_cursor.execute(f"SELECT * FROM {table}")
+        # Protege nomes com case sensitivo ou caracteres especiais usando identificador entre aspas
+        safe_table_name = table.replace('"', '""')
+        try:
+            fb_cursor.execute(f'SELECT * FROM "{safe_table_name}"')
+        except Exception as e:
+            # Se a tabela não existir ou houver erro ao preparar a query, loga e pula para a próxima
+            logging.error(f"Erro ao preparar SELECT para tabela {table}: {e}")
+            print(f"Pulando tabela {table}: {e}")
+            continue
         columns = [field[0].lower() for field in fields]
         
         insert_query = sql.SQL("INSERT INTO {} ({}) VALUES {}").format(
