@@ -54,6 +54,9 @@ def infer_column_type(series, column_name):
     # if column_name == 'barras' or column_name == 'Barras':
     #     return String(255) 
 
+    if 'ncm' in column_name.lower():
+        return String(255) 
+
     # Para strings, determina o tamanho máximo
     if series.dtype == 'object':
         max_length = series.astype(str).str.len().max()

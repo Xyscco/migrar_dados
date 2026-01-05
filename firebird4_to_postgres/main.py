@@ -1,8 +1,11 @@
 import fdb
 import psycopg2
 import unicodedata
+import os
+import subprocess
+import datetime
 
-from fdb import fbcore
+# from fdb import fbcore
 from psycopg2 import sql
 from tqdm import tqdm
 import logging
@@ -200,14 +203,53 @@ def migrate_data(fb_conn, pg_conn, table_structures):
         print(f"Total de registros inseridos em {table}: {total_inserted}")
 
 
+def create_postgres_backup(pg_config, backup_dir='backups'):
+    """Cria um backup em formato .sql do banco PostgreSQL usando `pg_dump`.
+    Retorna o caminho do arquivo gerado ou None em caso de erro.
+    """
+    backup_root = os.path.join(os.path.dirname(__file__), backup_dir)
+    os.makedirs(backup_root, exist_ok=True)
+
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    db_name = pg_config.get('database') or 'postgres'
+    filename = f"{db_name}_backup_{timestamp}.sql"
+    filepath = os.path.join(backup_root, filename)
+
+    env = os.environ.copy()
+    if 'password' in pg_config:
+        env['PGPASSWORD'] = str(pg_config.get('password') or '')
+
+    args = [
+        'pg_dump',
+        '-h', pg_config.get('host', 'localhost'),
+        '-U', pg_config.get('user', 'postgres'),
+        '-F', 'p',
+        '-d', pg_config.get('database'),
+        '-f', filepath
+    ]
+    # Se houver porta especificada, adiciona ao comando
+    if 'port' in pg_config and pg_config.get('port'):
+        args[1:1] = ['-p', str(pg_config.get('port'))]
+
+    try:
+        subprocess.run(args, env=env, check=True, capture_output=True, text=True)
+        return filepath
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Erro ao executar pg_dump: {e.stderr}")
+        return None
+    except Exception as e:
+        logging.error(f"Erro ao criar backup do PostgreSQL: {e}")
+        return None
+
+
 def main():
     # Configurações de conexão
     fb_config = {
-        "host": "localhost", "database": "D:\\Syncode\\projetos-Python\\migrar-dados\\firebird4_to_postgres\\bancos\CADASTRO.FDB",
+        "host": "localhost", "database": "D:\\syncode\\conversao\\CONV-627\\Dados.FDB",
         "user": "sysdba", "password": "masterkey"
     }
     pg_config = {
-        "host": "localhost", "database": "migradorfb4",
+        "host": "localhost", "database": "royalSistemas",
         "user": "postgres", "password": "syncode123"
     }
     
@@ -226,6 +268,16 @@ def main():
         migrate_data(fb_conn, pg_conn, table_structures)
         
         print("Migração concluída com sucesso!")
+        # Criar backup do PostgreSQL após migração
+        try:
+            backup_path = create_postgres_backup(pg_config)
+            if backup_path:
+                print(f"Backup criado em: {backup_path}")
+            else:
+                print("Falha ao criar o backup do PostgreSQL.")
+        except Exception as e:
+            logging.error(f"Erro ao criar backup: {e}")
+            print(f"Erro ao criar backup: {e}")
     else:
         print("Falha na conexão com os bancos de dados.")
     
