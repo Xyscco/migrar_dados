@@ -12,6 +12,8 @@ import logging
 
 logging.basicConfig(filename='migration_errors.log', level=logging.ERROR)
 
+INSERT_LINES = 3000
+
 def connect_firebird(host, database, user, password, port = 3051, charset = 'WIN1252'):
     """Conecta ao banco de dados Firebird."""
     try:
@@ -148,10 +150,13 @@ def migrate_data(fb_conn, pg_conn, table_structures):
             continue
         columns = [field[0].lower() for field in fields]
         
+        # Ajusta `insert_lines` por tabela: se for 'produto', usa 1, senão usa o padrão
+        insert_lines = 1 if table.lower() == 'produto' else INSERT_LINES
+
         insert_query = sql.SQL("INSERT INTO {} ({}) VALUES {}").format(
             sql.Identifier(table.lower()),
             sql.SQL(', ').join(map(sql.Identifier, columns)),
-            sql.SQL(', ').join([sql.SQL('({})').format(sql.SQL(', ').join([sql.Placeholder()] * len(columns)))] * 3000)
+            sql.SQL(', ').join([sql.SQL('({})').format(sql.SQL(', ').join([sql.Placeholder()] * len(columns)))] * insert_lines)
         )
         
         batch = []
@@ -159,7 +164,7 @@ def migrate_data(fb_conn, pg_conn, table_structures):
         
         while True:
             try:
-                rows = fb_cursor.fetchmany(3000)
+                rows = fb_cursor.fetchmany(insert_lines)
                 if not rows:
                     break
                 
@@ -177,7 +182,7 @@ def migrate_data(fb_conn, pg_conn, table_structures):
                     
                     batch.extend(processed_row)
                 
-                if len(batch) >= 3000 * len(columns):
+                if len(batch) >= insert_lines * len(columns):
                     try:
                         pg_cursor.execute(insert_query, batch)
                         pg_conn.commit()
